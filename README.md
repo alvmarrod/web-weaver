@@ -1,5 +1,10 @@
 # Web Weaver
 
+<p align="center">
+  <img alt="GitHub Tag" src="https://img.shields.io/github/v/tag/alvmarrod/web-weaver">
+  <img alt="GitHub License" src="https://img.shields.io/github/license/alvmarrod/web-weaver">
+</p>
+
 A lightweight web crawler that discovers domains/subdomains and their cross-domain links, storing exploration data for later graph visualization.
 
 ---
