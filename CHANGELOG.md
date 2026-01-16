@@ -5,6 +5,24 @@ All notable changes to Web Weaver will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-01-1
+
+### Added
+
+- Queue state persistence - pending work saved on checkpoint/shutdown
+- Node depth tracking from original seed
+- Smart resume from exact crawl state
+
+### Changed
+
+- Resume behavior (Breaking): Nodes now resume at their last crawl depth instead of resetting to depth=0
+- Database schema: added `last_depth` column to nodes and `queue_state` table
+- Depth limit now correctly enforced across resume cycles
+
+### Fixed
+
+- Depth reset bug where all resumed nodes were treated as new seeds
+
 ## [0.2.0] - 2026-01-16
 
 ### Changed

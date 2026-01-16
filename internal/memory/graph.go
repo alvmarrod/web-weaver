@@ -31,6 +31,12 @@ func NewMemoryGraph() *MemoryGraph {
 // UpsertNode inserts or updates a node in memory
 // Returns the node_id of the inserted/existing node
 func (mg *MemoryGraph) UpsertNode(domain, description string) (int, error) {
+	return mg.UpsertNodeWithDepth(domain, description, 0)
+}
+
+// UpsertNodeWithDepth inserts or updates a node in memory with depth tracking
+// Returns the node_id of the inserted/existing node
+func (mg *MemoryGraph) UpsertNodeWithDepth(domain, description string, depth int) (int, error) {
 	mg.mu.Lock()
 	defer mg.mu.Unlock()
 
@@ -39,6 +45,10 @@ func (mg *MemoryGraph) UpsertNode(domain, description string) (int, error) {
 		// Update description if provided and current is empty
 		if description != "" && node.Description == "" {
 			node.Description = description
+		}
+		// Update depth (keep the most recent/deepest)
+		if depth > node.LastDepth {
+			node.LastDepth = depth
 		}
 		return node.NodeID, nil
 	}
@@ -50,6 +60,7 @@ func (mg *MemoryGraph) UpsertNode(domain, description string) (int, error) {
 		DomainName:  domain,
 		Description: description,
 		CrawlCount:  0,
+		LastDepth:   depth,
 		CreatedAt:   time.Now(),
 	}
 
@@ -130,8 +141,8 @@ func (mg *MemoryGraph) Flush(store *storage.Storage) error {
 
 	// Flush nodes
 	for _, node := range mg.nodes {
-		// Upsert node with current description
-		_, err := store.UpsertNode(node.DomainName, node.Description)
+		// Upsert node with current description and depth
+		_, err := store.UpsertNodeWithDepth(node.DomainName, node.Description, node.LastDepth)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -214,7 +225,7 @@ func (mg *MemoryGraph) LoadFromStorage(store *storage.Storage, maxCrawls int) er
 
 	logrus.Info("Loading resumable nodes from database into memory...")
 
-	// Load resumable nodes
+	// Load resumable nodes (now includes LastDepth)
 	nodes, err := store.LoadResumableNodes(maxCrawls)
 	if err != nil {
 		return fmt.Errorf("failed to load nodes: %w", err)
@@ -222,7 +233,7 @@ func (mg *MemoryGraph) LoadFromStorage(store *storage.Storage, maxCrawls int) er
 
 	// Populate memory graph
 	for _, node := range nodes {
-		// Use DB node ID directly
+		// Use DB node directly (includes LastDepth)
 		mg.nodes[node.DomainName] = node
 		mg.nodesById[node.NodeID] = node
 
@@ -232,7 +243,7 @@ func (mg *MemoryGraph) LoadFromStorage(store *storage.Storage, maxCrawls int) er
 		}
 	}
 
-	logrus.Infof("Loaded %d nodes into memory", len(nodes))
+	logrus.Infof("Loaded %d nodes into memory with their depths", len(nodes))
 	return nil
 }
 
@@ -248,4 +259,42 @@ func (mg *MemoryGraph) ResetCrawlCount(nodeID int) error {
 
 	node.CrawlCount = 0
 	return nil
+}
+
+// SaveQueueState persists queue entries to database
+func (mg *MemoryGraph) SaveQueueState(store *storage.Storage, entries []storage.QueueEntry) error {
+	// Clear old queue state first
+	if err := store.ClearQueueEntries(); err != nil {
+		logrus.Warnf("Failed to clear old queue state: %v", err)
+	}
+
+	// Save each entry
+	saved := 0
+	for _, entry := range entries {
+		if err := store.SaveQueueEntry(entry.NodeID, entry.DomainName, entry.Depth); err != nil {
+			logrus.Warnf("Failed to save queue entry %s: %v", entry.DomainName, err)
+			continue
+		}
+		saved++
+	}
+
+	logrus.Infof("Saved %d queue entries to database", saved)
+	return nil
+}
+
+// LoadQueueState retrieves persisted queue entries from database
+func (mg *MemoryGraph) LoadQueueState(store *storage.Storage) ([]storage.QueueEntry, error) {
+	entries, err := store.LoadQueueEntries()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load queue state: %w", err)
+	}
+
+	// Convert pointers to values
+	result := make([]storage.QueueEntry, len(entries))
+	for i, entry := range entries {
+		result[i] = *entry
+	}
+
+	logrus.Infof("Loaded %d queue entries from database", len(result))
+	return result, nil
 }

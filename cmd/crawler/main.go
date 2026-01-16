@@ -67,58 +67,83 @@ func main() {
 	// Initialize crawler
 	c := crawler.NewCrawler(cfg, store, metricsCallback)
 
-	// Handle resume logic - load resumable nodes into memory
-	resumableNodes, err := store.LoadResumableNodes(cfg.MaxCrawlsPerNode)
+	// Handle resume logic - check for saved queue state first
+	queueEntries, err := c.LoadQueueState()
 	if err != nil {
-		logrus.Fatalf("Failed to load resumable nodes: %v", err)
+		logrus.Fatalf("Failed to load queue state: %v", err)
 	}
 
-	if len(resumableNodes) > 0 {
-		logrus.Infof("Resuming crawl: found %d resumable nodes, loading into memory...", len(resumableNodes))
+	if len(queueEntries) > 0 {
+		logrus.Infof("Resuming crawl: found %d saved queue entries", len(queueEntries))
 
 		// Load nodes from storage into memory graph
 		if err := c.LoadFromStorage(); err != nil {
 			logrus.Fatalf("Failed to load nodes into memory: %v", err)
 		}
 
-		// Re-queue all resumable nodes at depth 0
-		for _, node := range resumableNodes {
-			entry := storage.QueueEntry{
-				NodeID:     node.NodeID,
-				DomainName: node.DomainName,
-				Depth:      0,
-			}
+		// Re-queue all saved entries with their original depths
+		for _, entry := range queueEntries {
 			c.Enqueue(entry)
 			tracker.IncrementNodesDiscovered()
 		}
+
+		logrus.Infof("Resumed with %d pending entries at their original depths", len(queueEntries))
 	} else {
-		// No resumable nodes - start fresh with seed
-		logrus.Info("No resumable nodes found, starting fresh crawl with seed")
-
-		// Extract seed domain
-		seedDomain, err := crawler.ExtractDomain(cfg.SeedURL)
+		// No saved queue state - check for resumable nodes or start fresh
+		resumableNodes, err := store.LoadResumableNodes(cfg.MaxCrawlsPerNode)
 		if err != nil {
-			logrus.Fatalf("Invalid seed URL: %v", err)
+			logrus.Fatalf("Failed to load resumable nodes: %v", err)
 		}
 
-		// Check if seed exists and reset crawl_count if needed
-		existingSeed, err := store.GetNode(seedDomain)
-		if err != nil {
-			logrus.Fatalf("Failed to check for existing seed: %v", err)
-		}
+		if len(resumableNodes) > 0 {
+			logrus.Infof("Found %d resumable nodes, loading into memory...", len(resumableNodes))
 
-		if existingSeed != nil && existingSeed.CrawlCount >= cfg.MaxCrawlsPerNode {
-			logrus.Infof("Seed %s exists with crawl_count=%d, resetting to 0", seedDomain, existingSeed.CrawlCount)
-			if err := store.ResetCrawlCount(existingSeed.NodeID); err != nil {
-				logrus.Fatalf("Failed to reset crawl count: %v", err)
+			// Load nodes from storage into memory graph
+			if err := c.LoadFromStorage(); err != nil {
+				logrus.Fatalf("Failed to load nodes into memory: %v", err)
 			}
-		}
 
-		// Enqueue seed URL (will create node in memory if doesn't exist)
-		if _, err := c.EnqueueSeed(cfg.SeedURL); err != nil {
-			logrus.Fatalf("Failed to enqueue seed: %v", err)
+			// Re-queue all resumable nodes at their last known depth
+			for _, node := range resumableNodes {
+				entry := storage.QueueEntry{
+					NodeID:     node.NodeID,
+					DomainName: node.DomainName,
+					Depth:      node.LastDepth,
+				}
+				c.Enqueue(entry)
+				tracker.IncrementNodesDiscovered()
+			}
+
+			logrus.Infof("Resumed %d nodes at their last known depths", len(resumableNodes))
+		} else {
+			// No resumable nodes - start fresh with seed
+			logrus.Info("No resumable nodes found, starting fresh crawl with seed")
+
+			// Extract seed domain
+			seedDomain, err := crawler.ExtractDomain(cfg.SeedURL)
+			if err != nil {
+				logrus.Fatalf("Invalid seed URL: %v", err)
+			}
+
+			// Check if seed exists and reset crawl_count if needed
+			existingSeed, err := store.GetNode(seedDomain)
+			if err != nil {
+				logrus.Fatalf("Failed to check for existing seed: %v", err)
+			}
+
+			if existingSeed != nil && existingSeed.CrawlCount >= cfg.MaxCrawlsPerNode {
+				logrus.Infof("Seed %s exists with crawl_count=%d, resetting to 0", seedDomain, existingSeed.CrawlCount)
+				if err := store.ResetCrawlCount(existingSeed.NodeID); err != nil {
+					logrus.Fatalf("Failed to reset crawl count: %v", err)
+				}
+			}
+
+			// Enqueue seed URL (will create node in memory if doesn't exist)
+			if _, err := c.EnqueueSeed(cfg.SeedURL); err != nil {
+				logrus.Fatalf("Failed to enqueue seed: %v", err)
+			}
+			tracker.IncrementNodesDiscovered()
 		}
-		tracker.IncrementNodesDiscovered()
 	}
 
 	// Start crawler workers
@@ -140,13 +165,13 @@ func main() {
 		<-forceQuitChan        // First signal (consumed by main handler)
 		sig := <-forceQuitChan // Second signal = force quit
 		logrus.Warnf("Received second signal (%v) - forcing immediate exit!", sig)
-		logrus.Warn("Attempting emergency save...")
+		logrus.Warn("Attempting emergency save (graph + queue state)...")
 
-		// Emergency flush of memory graph
+		// Emergency flush of memory graph and queue state
 		if err := c.FlushToStorage(); err != nil {
-			logrus.Errorf("Emergency memory flush failed: %v", err)
+			logrus.Errorf("Emergency flush failed: %v", err)
 		} else {
-			logrus.Info("Emergency memory flush succeeded")
+			logrus.Info("Emergency flush succeeded")
 		}
 
 		// Emergency metrics save
@@ -162,6 +187,13 @@ func main() {
 		defer wg.Done()
 		c.WaitUntilEmpty()
 		terminationReason = "queue_empty"
+
+		// Clear saved queue state on successful completion
+		logrus.Info("Natural completion: clearing saved queue state...")
+		if err := store.ClearQueueEntries(); err != nil {
+			logrus.Warnf("Failed to clear queue state: %v", err)
+		}
+
 		// Signal main goroutine
 		select {
 		case <-shutdownComplete:
@@ -226,13 +258,13 @@ func main() {
 		logrus.Warn("Background tasks timeout (5s), continuing with shutdown")
 	}
 
-	logrus.Info("Step 3/5: Flushing in-memory graph to database...")
+	logrus.Info("Step 3/5: Flushing in-memory graph and queue state to database...")
 
-	// Flush memory graph to database
+	// Flush memory graph and queue state to database
 	if err := c.FlushToStorage(); err != nil {
 		logrus.Errorf("Failed to flush memory graph: %v", err)
 	} else {
-		logrus.Info("Memory graph flushed successfully")
+		logrus.Info("Memory graph and queue state flushed successfully")
 	}
 
 	logrus.Info("Step 4/5: Writing final metrics...")

@@ -8,6 +8,7 @@ type Node struct {
 	DomainName  string
 	Description string
 	CrawlCount  int
+	LastDepth   int
 	CreatedAt   time.Time
 }
 

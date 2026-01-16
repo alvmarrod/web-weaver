@@ -106,6 +106,18 @@ func (q *Queue) Stop() {
 	q.cond.Broadcast()
 }
 
+// GetAllEntries returns a snapshot of all current queue entries
+// Used for persisting queue state on checkpoint/shutdown
+func (q *Queue) GetAllEntries() []storage.QueueEntry {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	// Return a copy of the current items
+	entries := make([]storage.QueueEntry, len(q.items))
+	copy(entries, q.items)
+	return entries
+}
+
 // makeKey creates a deduplication key from domain and depth
 func makeKey(domain string, depth int) string {
 	return fmt.Sprintf("%s@%d", domain, depth)

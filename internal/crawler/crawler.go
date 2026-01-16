@@ -304,8 +304,11 @@ func (c *Crawler) handleLink(sourceCtx *storage.QueueEntry, link string) {
 		return
 	}
 
-	// Upsert target node (in memory)
-	targetNodeID, err := c.memGraph.UpsertNode(targetDomain, "")
+	// Calculate depth for target node
+	targetDepth := sourceCtx.Depth + 1
+
+	// Upsert target node with depth (in memory)
+	targetNodeID, err := c.memGraph.UpsertNodeWithDepth(targetDomain, "", targetDepth)
 	if err != nil {
 		logrus.Warnf("Failed to upsert target node %s: %v", targetDomain, err)
 		return
@@ -327,11 +330,10 @@ func (c *Crawler) handleLink(sourceCtx *storage.QueueEntry, link string) {
 		c.metricsCallback(0, 0, 1, 0, 0) // edgesRecorded++
 	}
 
-	logrus.Infof("Edge: %s -> %s (depth %d->%d)", sourceCtx.DomainName, targetDomain, sourceCtx.Depth, sourceCtx.Depth+1)
+	logrus.Infof("Edge: %s -> %s (depth %d->%d)", sourceCtx.DomainName, targetDomain, sourceCtx.Depth, targetDepth)
 
 	// Check depth limit
-	nextDepth := sourceCtx.Depth + 1
-	if nextDepth > c.cfg.MaxDepth {
+	if targetDepth > c.cfg.MaxDepth {
 		return
 	}
 
@@ -342,7 +344,7 @@ func (c *Crawler) handleLink(sourceCtx *storage.QueueEntry, link string) {
 	c.queue.Push(storage.QueueEntry{
 		NodeID:     targetNodeID,
 		DomainName: targetDomain,
-		Depth:      nextDepth,
+		Depth:      targetDepth,
 	})
 }
 
@@ -440,14 +442,34 @@ func (c *Crawler) WaitUntilEmpty() {
 	}
 }
 
-// FlushToStorage flushes in-memory graph to SQLite
+// FlushToStorage flushes in-memory graph and queue state to SQLite
 func (c *Crawler) FlushToStorage() error {
-	return c.memGraph.Flush(c.storage)
+	// Flush graph data
+	if err := c.memGraph.Flush(c.storage); err != nil {
+		return err
+	}
+
+	// Save queue state
+	return c.SaveQueueState()
+}
+
+// SaveQueueState persists current queue entries to database
+func (c *Crawler) SaveQueueState() error {
+	// Get all pending queue entries
+	entries := c.queue.GetAllEntries()
+
+	// Save to database via memory graph
+	return c.memGraph.SaveQueueState(c.storage, entries)
 }
 
 // LoadFromStorage loads resumable nodes from SQLite into memory
 func (c *Crawler) LoadFromStorage() error {
 	return c.memGraph.LoadFromStorage(c.storage, c.cfg.MaxCrawlsPerNode)
+}
+
+// LoadQueueState loads persisted queue entries from database
+func (c *Crawler) LoadQueueState() ([]storage.QueueEntry, error) {
+	return c.memGraph.LoadQueueState(c.storage)
 }
 
 // Helper methods for in-flight request tracking
