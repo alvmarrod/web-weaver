@@ -14,7 +14,7 @@ type Storage struct {
 
 // NewStorage creates a new Storage instance, opening/creating the DB and initializing schema
 func NewStorage(dbPath string) (*Storage, error) {
-	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL")
+	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_synchronous=NORMAL")
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
