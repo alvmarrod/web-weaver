@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/alvmarrod/web-weaver/internal/config"
+	"github.com/alvmarrod/web-weaver/internal/memory"
 	"github.com/alvmarrod/web-weaver/internal/storage"
 	"github.com/gocolly/colly/v2"
 	"github.com/sirupsen/logrus"
@@ -15,6 +16,7 @@ import (
 type Crawler struct {
 	cfg             *config.Config
 	storage         *storage.Storage
+	memGraph        *memory.MemoryGraph
 	queue           *Queue
 	limiter         *SubdomainLimiter
 	collector       *colly.Collector
@@ -33,6 +35,7 @@ func NewCrawler(cfg *config.Config, store *storage.Storage, metricsCallback func
 	c := &Crawler{
 		cfg:             cfg,
 		storage:         store,
+		memGraph:        memory.NewMemoryGraph(),
 		queue:           NewQueue(),
 		limiter:         NewSubdomainLimiter(cfg.MaxSubdomainsPerRoot),
 		contextMap:      make(map[string]storage.QueueEntry),
@@ -78,8 +81,8 @@ func (c *Crawler) setupColly() {
 			title = title[:60]
 		}
 
-		// Update node description with title
-		_, err = c.storage.UpsertNode(ctx.DomainName, title)
+		// Update node description with title (in memory)
+		_, err = c.memGraph.UpsertNode(ctx.DomainName, title)
 		if err != nil {
 			logrus.Warnf("Failed to update node description: %v", err)
 		}
@@ -98,7 +101,7 @@ func (c *Crawler) setupColly() {
 		}
 
 		// Only use meta description if title hasn't been set
-		node, err := c.storage.GetNode(ctx.DomainName)
+		node, err := c.memGraph.GetNode(ctx.DomainName)
 		if err != nil || node == nil || node.Description != "" {
 			return
 		}
@@ -108,7 +111,7 @@ func (c *Crawler) setupColly() {
 			description = description[:60]
 		}
 
-		_, err = c.storage.UpsertNode(ctx.DomainName, description)
+		_, err = c.memGraph.UpsertNode(ctx.DomainName, description)
 		if err != nil {
 			logrus.Warnf("Failed to update node description: %v", err)
 		}
@@ -235,8 +238,8 @@ func (c *Crawler) worker(id int) {
 
 		logrus.Debugf("Worker %d: popped %s (depth=%d)", id, entry.DomainName, entry.Depth)
 
-		// Check crawl count limit
-		node, err := c.storage.GetNode(entry.DomainName)
+		// Check crawl count limit (from memory)
+		node, err := c.memGraph.GetNode(entry.DomainName)
 		if err != nil {
 			logrus.Warnf("Worker %d: failed to get node %s: %v", id, entry.DomainName, err)
 			continue
@@ -256,8 +259,8 @@ func (c *Crawler) worker(id int) {
 		targetURL := "https://" + entry.DomainName
 		c.setContext(entry.DomainName, entry)
 
-		// Increment crawl count
-		if err := c.storage.IncrementCrawlCount(entry.NodeID); err != nil {
+		// Increment crawl count (in memory)
+		if err := c.memGraph.IncrementCrawlCount(entry.NodeID); err != nil {
 			logrus.Warnf("Worker %d: failed to increment crawl count: %v", id, err)
 		}
 
@@ -301,8 +304,8 @@ func (c *Crawler) handleLink(sourceCtx *storage.QueueEntry, link string) {
 		return
 	}
 
-	// Upsert target node
-	targetNodeID, err := c.storage.UpsertNode(targetDomain, "")
+	// Upsert target node (in memory)
+	targetNodeID, err := c.memGraph.UpsertNode(targetDomain, "")
 	if err != nil {
 		logrus.Warnf("Failed to upsert target node %s: %v", targetDomain, err)
 		return
@@ -313,8 +316,8 @@ func (c *Crawler) handleLink(sourceCtx *storage.QueueEntry, link string) {
 		c.metricsCallback(0, 1, 0, 0, 0) // nodesDiscovered++
 	}
 
-	// Record edge
-	if err := c.storage.UpsertEdge(sourceCtx.NodeID, targetNodeID); err != nil {
+	// Record edge (in memory)
+	if err := c.memGraph.UpsertEdge(sourceCtx.NodeID, targetNodeID); err != nil {
 		logrus.Warnf("Failed to upsert edge %s -> %s: %v", sourceCtx.DomainName, targetDomain, err)
 		return
 	}
@@ -412,7 +415,9 @@ func (c *Crawler) WaitUntilEmpty() {
 		case <-ticker.C:
 			size := c.queue.Size()
 			inFlight := c.getInFlight()
-			logrus.Infof("Queue status: %d items, %d in-flight requests", size, inFlight)
+			nodeCount, edgeCount := c.memGraph.GetStats()
+			logrus.Infof("Queue: %d items, %d in-flight | Memory: %d nodes, %d edges",
+				size, inFlight, nodeCount, edgeCount)
 		default:
 		}
 
@@ -433,6 +438,16 @@ func (c *Crawler) WaitUntilEmpty() {
 			}
 		}
 	}
+}
+
+// FlushToStorage flushes in-memory graph to SQLite
+func (c *Crawler) FlushToStorage() error {
+	return c.memGraph.Flush(c.storage)
+}
+
+// LoadFromStorage loads resumable nodes from SQLite into memory
+func (c *Crawler) LoadFromStorage() error {
+	return c.memGraph.LoadFromStorage(c.storage, c.cfg.MaxCrawlsPerNode)
 }
 
 // Helper methods for in-flight request tracking

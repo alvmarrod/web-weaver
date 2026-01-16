@@ -67,14 +67,19 @@ func main() {
 	// Initialize crawler
 	c := crawler.NewCrawler(cfg, store, metricsCallback)
 
-	// Handle resume logic - load all resumable nodes
+	// Handle resume logic - load resumable nodes into memory
 	resumableNodes, err := store.LoadResumableNodes(cfg.MaxCrawlsPerNode)
 	if err != nil {
 		logrus.Fatalf("Failed to load resumable nodes: %v", err)
 	}
 
 	if len(resumableNodes) > 0 {
-		logrus.Infof("Resuming crawl: found %d resumable nodes, re-queueing at depth=0", len(resumableNodes))
+		logrus.Infof("Resuming crawl: found %d resumable nodes, loading into memory...", len(resumableNodes))
+
+		// Load nodes from storage into memory graph
+		if err := c.LoadFromStorage(); err != nil {
+			logrus.Fatalf("Failed to load nodes into memory: %v", err)
+		}
 
 		// Re-queue all resumable nodes at depth 0
 		for _, node := range resumableNodes {
@@ -109,7 +114,7 @@ func main() {
 			}
 		}
 
-		// Enqueue seed URL (will create node if doesn't exist)
+		// Enqueue seed URL (will create node in memory if doesn't exist)
 		if _, err := c.EnqueueSeed(cfg.SeedURL); err != nil {
 			logrus.Fatalf("Failed to enqueue seed: %v", err)
 		}
@@ -135,7 +140,16 @@ func main() {
 		<-forceQuitChan        // First signal (consumed by main handler)
 		sig := <-forceQuitChan // Second signal = force quit
 		logrus.Warnf("Received second signal (%v) - forcing immediate exit!", sig)
-		logrus.Warn("Attempting emergency metrics save...")
+		logrus.Warn("Attempting emergency save...")
+
+		// Emergency flush of memory graph
+		if err := c.FlushToStorage(); err != nil {
+			logrus.Errorf("Emergency memory flush failed: %v", err)
+		} else {
+			logrus.Info("Emergency memory flush succeeded")
+		}
+
+		// Emergency metrics save
 		if err := tracker.WriteToFile(cfg.MetricsPath, "forced_exit"); err != nil {
 			logrus.Errorf("Emergency metrics save failed: %v", err)
 		}
@@ -191,12 +205,12 @@ func main() {
 	}
 
 	logrus.Info("Initiating graceful shutdown...")
-	logrus.Info("Step 1/4: Stopping crawler workers...")
+	logrus.Info("Step 1/5: Stopping crawler workers...")
 
 	// Stop crawler (with timeouts built-in)
 	c.Stop()
 
-	logrus.Info("Step 2/4: Waiting for background goroutines...")
+	logrus.Info("Step 2/5: Waiting for background goroutines...")
 
 	// Wait for background goroutines with timeout
 	bgDone := make(chan struct{})
@@ -212,7 +226,16 @@ func main() {
 		logrus.Warn("Background tasks timeout (5s), continuing with shutdown")
 	}
 
-	logrus.Info("Step 3/4: Writing final metrics...")
+	logrus.Info("Step 3/5: Flushing in-memory graph to database...")
+
+	// Flush memory graph to database
+	if err := c.FlushToStorage(); err != nil {
+		logrus.Errorf("Failed to flush memory graph: %v", err)
+	} else {
+		logrus.Info("Memory graph flushed successfully")
+	}
+
+	logrus.Info("Step 4/5: Writing final metrics...")
 
 	// Final progress log
 	logrus.Info("Final stats: " + tracker.LogProgress())
@@ -224,7 +247,7 @@ func main() {
 		logrus.Infof("Metrics written to %s", cfg.MetricsPath)
 	}
 
-	logrus.Info("Step 4/4: Closing database connection...")
+	logrus.Info("Step 5/5: Closing database connection...")
 
 	// Database is closed via defer store.Close()
 
