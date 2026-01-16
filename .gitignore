@@ -1,0 +1,6 @@
+# Binary
+web_weaver
+
+# Outputs
+metrics.log
+crawler.db*

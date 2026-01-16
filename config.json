@@ -1,0 +1,13 @@
+{
+  "seed_url": "https://www.xataka.com/",
+  "max_depth": 500,
+  "max_crawls_per_node": 50,
+  "max_subdomains_per_root": 20,
+  "max_outbound_links": 50,
+  "concurrent_workers": 8,
+  "request_timeout_ms": 5000,
+  "retry_attempts": 3,
+  "retry_delay_ms": 5000,
+  "db_path": "crawler.db",
+  "metrics_path": "metrics.log"
+}

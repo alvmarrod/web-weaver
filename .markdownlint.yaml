@@ -1,0 +1,22 @@
+# Markdownlint configuration
+# See https://github.com/DavidAnson/markdownlint/blob/main/doc/Rules.md
+
+# Default state for all rules
+default: true
+
+# MD013/line-length - Allow long lines (code blocks, tables, etc.)
+MD013: false
+
+# MD033/no-inline-html - Allow inline HTML (useful for badges, formatting)
+MD033: false
+
+# MD041/first-line-heading - Don't require H1 as first line (allow front matter, badges)
+MD041: false
+
+# MD024/no-duplicate-heading - Allow duplicate headings in different sections
+MD024:
+  siblings_only: true
+
+# MD046/code-block-style - Prefer fenced code blocks
+MD046:
+  style: fenced

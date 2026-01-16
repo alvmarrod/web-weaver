@@ -68,7 +68,7 @@ Build a lightweight web crawler that discovers domains and subdomains and their 
 
 This prevents infinite loops such as:
 
-```
+```text
 A → B → A → B
 ```
 
@@ -138,4 +138,3 @@ If you want next:
 * a **crawler loop pseudocode**
 * a **graph schema for Neo4j / SQL**
 * or a **sample crawl walk-through**
-
