@@ -4,3 +4,7 @@ web_weaver
 # Outputs
 metrics.log
 crawler.db*
+
+# Python tools
+.env_test
+__pycache__
